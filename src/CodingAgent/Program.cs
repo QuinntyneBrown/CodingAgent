@@ -1,70 +1,66 @@
-namespace CodingAgent;
+using System.CommandLine;
+using CodingAgent;
+using CodingAgent.Commands;
+using CodingAgent.Configuration;
+using CodingAgent.Services;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 
-public class Program
+// Resolve the repo root (parent of src/)
+var basePath = FindRepoRoot(AppDomain.CurrentDomain.BaseDirectory)
+    ?? Directory.GetCurrentDirectory();
+
+// Build host with DI, Logging, and Configuration
+var builder = Host.CreateApplicationBuilder(Array.Empty<string>());
+
+// Logging: use plain formatter for clean CLI output
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole(options => options.FormatterName = PlainConsoleFormatter.FormatterName)
+    .AddConsoleFormatter<PlainConsoleFormatter, ConsoleFormatterOptions>();
+builder.Logging.SetMinimumLevel(LogLevel.Information);
+
+// Configuration: load repo-root appsettings.json, then inject basePath
+var settingsFile = Path.Combine(basePath, "appsettings.json");
+if (File.Exists(settingsFile))
+    builder.Configuration.AddJsonFile(settingsFile, optional: true, reloadOnChange: false);
+
+builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
 {
-    public static void Main(string[] args)
+    [$"{AgentOptions.SectionName}:BasePath"] = basePath
+});
+
+// Register services
+builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection(AgentOptions.SectionName));
+builder.Services.AddSingleton<SessionStore>();
+builder.Services.AddSingleton<OutboxBuilder>();
+builder.Services.AddSingleton<CommandParser>();
+builder.Services.AddSingleton<CommandExecutor>();
+builder.Services.AddSingleton<Agent>();
+
+using var host = builder.Build();
+
+// Build CLI with System.CommandLine
+var rootCommand = new RootCommand("CodingAgent - Offline coding agent using text file protocol");
+rootCommand.AddCommand(NewSessionCommand.Create(host.Services));
+rootCommand.AddCommand(ResumeCommand.Create(host.Services));
+
+return await rootCommand.InvokeAsync(args);
+
+// --- Helpers ---
+
+static string? FindRepoRoot(string startDir)
+{
+    var dir = startDir;
+    for (int i = 0; i < 10; i++)
     {
-        var basePath = AppDomain.CurrentDomain.BaseDirectory;
-
-        // Walk up to find the repo root (parent of src/)
-        var repoRoot = FindRepoRoot(basePath);
-        if (repoRoot != null)
-            basePath = repoRoot;
-
-        if (args.Length == 1 && args[0] == "--help")
-        {
-            PrintUsage();
-            return;
-        }
-
-        var agent = new Agent(basePath);
-
-        if (args.Length == 0 || (args.Length == 1 && args[0] == "--resume"))
-        {
-            if (!agent.ResumeSession())
-            {
-                Console.WriteLine("Usage: CodingAgent <task description>");
-                Console.WriteLine("       CodingAgent --resume");
-                return;
-            }
-        }
-        else
-        {
-            var prompt = string.Join(' ', args);
-            agent.StartNewSession(prompt);
-        }
-
-        agent.Run();
+        if (Directory.Exists(Path.Combine(dir, "src")))
+            return dir;
+        var parent = Directory.GetParent(dir);
+        if (parent == null) break;
+        dir = parent.FullName;
     }
-
-    private static void PrintUsage()
-    {
-        Console.WriteLine("CodingAgent - Offline coding agent using text file protocol");
-        Console.WriteLine();
-        Console.WriteLine("Usage:");
-        Console.WriteLine("  CodingAgent <task description>   Start a new session with the given task");
-        Console.WriteLine("  CodingAgent --resume             Resume the latest incomplete session");
-        Console.WriteLine("  CodingAgent --help               Show this help message");
-        Console.WriteLine();
-        Console.WriteLine("Workflow:");
-        Console.WriteLine("  1. Run CodingAgent with a task description");
-        Console.WriteLine("  2. Copy the outbox file contents and paste into your LLM");
-        Console.WriteLine("  3. Save the LLM response as a .txt file in the inbox/ folder");
-        Console.WriteLine("  4. The agent processes commands and writes the next outbox file");
-        Console.WriteLine("  5. Repeat until the LLM sends [DONE]");
-    }
-
-    private static string? FindRepoRoot(string startDir)
-    {
-        var dir = startDir;
-        for (int i = 0; i < 10; i++)
-        {
-            if (Directory.Exists(Path.Combine(dir, "src")))
-                return dir;
-            var parent = Directory.GetParent(dir);
-            if (parent == null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    return null;
 }

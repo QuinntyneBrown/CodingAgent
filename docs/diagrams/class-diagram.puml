@@ -4,44 +4,47 @@ skinparam linetype ortho
 skinparam classAttributeIconSize 0
 
 package "Entry Point" {
-    class Program {
-        + {static} Main(args: string[]): void
-        - {static} PrintUsage(): void
-        - {static} FindRepoRoot(startDir: string): string?
-    }
-}
-
-package "Orchestration" {
-    class Agent {
-        - _basePath: string
-        - _workspacePath: string
-        - _inboxPath: string
-        - _outboxPath: string
-        - _sessionsPath: string
-        - _processedPath: string
-        - _executor: CommandExecutor
-        - _session: Session
+    class "Program\n(top-level)" as Program <<static>> {
+        Builds IHost
+        Configures DI, Logging, Options
+        Sets up System.CommandLine
+        Invokes CLI parser
         --
-        + Agent(basePath: string)
-        + StartNewSession(prompt: string): void
-        + ResumeSession(): bool
-        + Run(): void
-        - WaitForInboxFile(): string?
-        - FindInboxFile(): string?
-        - {static} IsFileReady(path: string): bool
+        - {static} FindRepoRoot(startDir): string?
     }
 }
 
-package "Protocol & Models" {
-    class Protocol <<static>> {
-        + {static} Version: string = "1.0"
-        + {static} SectionHeader: string
-        + {static} SectionProtocol: string
-        + {static} SectionContext: string
-        + {static} SectionPrompt: string
-        + {static} Instructions: string
+package "Commands" <<Rectangle>> {
+    class NewSessionCommand <<static>> {
+        + {static} Create(services: IServiceProvider): Command
     }
 
+    class ResumeCommand <<static>> {
+        + {static} Create(services: IServiceProvider): Command
+    }
+}
+
+package "Configuration" <<Rectangle>> {
+    class AgentOptions {
+        + {static} SectionName: string = "Agent"
+        --
+        + BasePath: string
+        + WorkspaceDir: string
+        + InboxDir: string
+        + OutboxDir: string
+        + SessionsDir: string
+        + CommandTimeoutSeconds: int
+        + MaxOutputLength: int
+        --
+        + WorkspacePath: string <<computed>>
+        + InboxPath: string <<computed>>
+        + OutboxPath: string <<computed>>
+        + SessionsPath: string <<computed>>
+        + ProcessedPath: string <<computed>>
+    }
+}
+
+package "Models" <<Rectangle>> {
     class Session {
         + SessionId: string
         + Task: string
@@ -60,66 +63,6 @@ package "Protocol & Models" {
         + Output: string
     }
 
-    class SessionStore <<static>> {
-        - {static} JsonOptions: JsonSerializerOptions
-        + {static} Save(session: Session, sessionsDir: string): void
-        + {static} Load(sessionsDir: string, sessionId: string): Session?
-        + {static} LoadLatest(sessionsDir: string): Session?
-    }
-
-    class OutboxBuilder <<static>> {
-        + {static} Build(session: Session, workspacePath: string): string
-    }
-}
-
-package "Command Parsing" {
-    abstract record ParsedCommand
-
-    record CreateFileCommand {
-        + Path: string
-        + Content: string
-    }
-
-    record EditFileCommand {
-        + Path: string
-        + StartLine: int
-        + EndLine: int
-        + Content: string
-    }
-
-    record DeleteFileCommand {
-        + Path: string
-    }
-
-    record ReadFileCommand {
-        + Path: string
-    }
-
-    record RunCommand {
-        + Command: string
-    }
-
-    record MessageCommand {
-        + Text: string
-    }
-
-    record DoneCommand {
-        + Message: string
-    }
-
-    record ErrorCommand {
-        + Error: string
-    }
-
-    class CommandParser <<static>> {
-        - {static} AttributeRegex: Regex
-        + {static} Parse(text: string): List<ParsedCommand>
-        - {static} ParseAttributes(tag: string): Dictionary<string, string>
-        - {static} CollectBody(lines: string[], startIdx: int, closingTag: string): (string, int)
-    }
-}
-
-package "Command Execution" {
     class ExecutionOutcome {
         + Results: List<CommandResult>
         + ReadFileRequests: List<string>
@@ -127,19 +70,116 @@ package "Command Execution" {
         + DoneMessage: string?
     }
 
+    abstract record ParsedCommand
+
+    record CreateFileCommand {
+        + Path: string
+        + Content: string
+    }
+    record EditFileCommand {
+        + Path: string
+        + StartLine: int
+        + EndLine: int
+        + Content: string
+    }
+    record DeleteFileCommand {
+        + Path: string
+    }
+    record ReadFileCommand {
+        + Path: string
+    }
+    record RunCommand {
+        + Command: string
+    }
+    record MessageCommand {
+        + Text: string
+    }
+    record DoneCommand {
+        + Message: string
+    }
+    record ErrorCommand {
+        + Error: string
+    }
+}
+
+package "Services" <<Rectangle>> {
+    class Agent {
+        - _options: AgentOptions
+        - _executor: CommandExecutor
+        - _parser: CommandParser
+        - _sessionStore: SessionStore
+        - _outboxBuilder: OutboxBuilder
+        - _logger: ILogger<Agent>
+        - _session: Session
+        --
+        + Agent(options, executor, parser, sessionStore, outboxBuilder, logger)
+        + StartNewSession(prompt: string): void
+        + ResumeSession(): bool
+        + Run(): void
+        - WaitForInboxFile(): string?
+        - FindInboxFile(): string?
+        - {static} IsFileReady(path: string): bool
+    }
+
     class CommandExecutor {
         - _workspacePath: string
+        - _timeoutMs: int
+        - _maxOutputLength: int
+        - _logger: ILogger<CommandExecutor>
         --
-        + CommandExecutor(workspacePath: string)
+        + CommandExecutor(options, logger)
         + Execute(commands: List<ParsedCommand>): ExecutionOutcome
         - ResolveSafePath(relativePath: string): string?
-        - ExecuteCreateFile(cmd: CreateFileCommand): CommandResult
-        - ExecuteEditFile(cmd: EditFileCommand): CommandResult
-        - ExecuteDeleteFile(cmd: DeleteFileCommand): CommandResult
-        - ExecuteReadFile(cmd: ReadFileCommand, outcome: ExecutionOutcome): CommandResult
-        - ExecuteRunCommand(cmd: RunCommand): CommandResult
-        - ExecuteMessage(cmd: MessageCommand): CommandResult
-        - {static} TruncateOutput(output: string, maxLength: int): string
+        - ExecuteCreateFile(cmd): CommandResult
+        - ExecuteEditFile(cmd): CommandResult
+        - ExecuteDeleteFile(cmd): CommandResult
+        - ExecuteReadFile(cmd, outcome): CommandResult
+        - ExecuteRunCommand(cmd): CommandResult
+        - ExecuteMessage(cmd): CommandResult
+        - TruncateOutput(output: string): string
+    }
+
+    class CommandParser {
+        - {static} AttributeRegex: Regex
+        --
+        + Parse(text: string): List<ParsedCommand>
+        - {static} ParseAttributes(tag: string): Dictionary
+        - {static} CollectBody(lines, startIdx, closingTag): (string, int)
+    }
+
+    class SessionStore {
+        - _sessionsDir: string
+        - _logger: ILogger<SessionStore>
+        - {static} JsonOptions: JsonSerializerOptions
+        --
+        + SessionStore(options, logger)
+        + Save(session: Session): void
+        + Load(sessionId: string): Session?
+        + LoadLatest(): Session?
+    }
+
+    class OutboxBuilder {
+        - _workspacePath: string
+        --
+        + OutboxBuilder(options)
+        + Build(session: Session): string
+    }
+}
+
+package "Infrastructure" <<Rectangle>> {
+    class Protocol <<static>> {
+        + {static} Version: string = "1.0"
+        + {static} SectionHeader: string
+        + {static} SectionProtocol: string
+        + {static} SectionContext: string
+        + {static} SectionPrompt: string
+        + {static} Instructions: string
+    }
+
+    class PlainConsoleFormatter {
+        + {static} FormatterName: string = "plain"
+        + PlainConsoleFormatter(options)
+        + Write(logEntry, scopeProvider, textWriter): void
     }
 }
 
@@ -153,20 +193,39 @@ MessageCommand --|> ParsedCommand
 DoneCommand --|> ParsedCommand
 ErrorCommand --|> ParsedCommand
 
-' Relationships
-Program ..> Agent : creates
-Agent *-- CommandExecutor : owns
+' DI relationships
+Program ..> NewSessionCommand : configures
+Program ..> ResumeCommand : configures
+Program ..> AgentOptions : registers
+Program ..> PlainConsoleFormatter : registers
+
+NewSessionCommand ..> Agent : resolves from DI
+ResumeCommand ..> Agent : resolves from DI
+
+Agent --> CommandExecutor : injected
+Agent --> CommandParser : injected
+Agent --> SessionStore : injected
+Agent --> OutboxBuilder : injected
 Agent --> Session : manages
-Agent ..> SessionStore : uses
-Agent ..> OutboxBuilder : uses
-Agent ..> CommandParser : uses
-SessionStore ..> Session : serializes
-OutboxBuilder ..> Session : reads
-OutboxBuilder ..> Protocol : reads
-CommandParser ..> ParsedCommand : produces
+Agent ..> "IOptions<AgentOptions>" : injected
+Agent ..> "ILogger<Agent>" : injected
+
+CommandExecutor ..> "IOptions<AgentOptions>" : injected
+CommandExecutor ..> "ILogger<CommandExecutor>" : injected
 CommandExecutor ..> ParsedCommand : consumes
 CommandExecutor ..> ExecutionOutcome : produces
 CommandExecutor ..> CommandResult : produces
+
+SessionStore ..> "IOptions<AgentOptions>" : injected
+SessionStore ..> "ILogger<SessionStore>" : injected
+SessionStore ..> Session : serializes
+
+OutboxBuilder ..> "IOptions<AgentOptions>" : injected
+OutboxBuilder ..> Session : reads
+OutboxBuilder ..> Protocol : reads
+
+CommandParser ..> ParsedCommand : produces
+
 ExecutionOutcome o-- CommandResult : contains
 Session o-- CommandResult : contains
 

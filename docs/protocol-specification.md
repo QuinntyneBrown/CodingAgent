@@ -229,7 +229,7 @@ command text
 
 No attributes. The body is the command to execute.
 
-**Behavior**: Runs via `cmd.exe /c` (Windows) or `/bin/sh -c` (Linux/macOS). Working directory is the workspace root. 30-second timeout. stdout and stderr are captured. Output is truncated to 4000 characters.
+**Behavior**: Runs via `cmd.exe /c` (Windows) or `/bin/sh -c` (Linux/macOS). Working directory is the workspace root. Configurable timeout (default 30 seconds, set via `Agent:CommandTimeoutSeconds`). stdout and stderr are captured. Output is truncated to a configurable limit (default 4000 characters, set via `Agent:MaxOutputLength`).
 
 ### MESSAGE
 
@@ -323,7 +323,7 @@ Paths that escape the workspace (e.g., `../../../etc/passwd`) are **rejected** w
 ### Command Execution Sandboxing
 
 - Shell commands run with the workspace as the working directory
-- 30-second timeout prevents runaway processes
+- Configurable timeout (default 30s) prevents runaway processes
 - Timed-out processes are killed (entire process tree)
 - stdout/stderr output is truncated to prevent memory exhaustion
 

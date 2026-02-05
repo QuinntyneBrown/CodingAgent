@@ -7,6 +7,7 @@ participant OutboxBuilder
 participant SessionStore
 participant CommandParser
 participant CommandExecutor
+participant "ILogger" as Log
 participant "FileSystemWatcher" as FSW
 participant "File System" as FS
 
@@ -16,11 +17,11 @@ loop while !session.IsComplete
     Agent -> Agent : Build outboxFileName\n"{id}_seq{NNNN}.txt"
 
     alt outbox file does NOT exist
-        Agent -> OutboxBuilder : Build(session, workspacePath)
+        Agent -> OutboxBuilder : Build(session)
         activate OutboxBuilder
 
         OutboxBuilder -> FS : GetFiles(workspace/, *, AllDirectories)
-        note right : Build workspace\nfile listing
+        note right : Build workspace\nfile listing from\nIOptions<AgentOptions>\n.WorkspacePath
 
         OutboxBuilder -> OutboxBuilder : Assemble sections:\n1. HEADER\n2. PROTOCOL\n3. CONTEXT\n4. PROMPT
 
@@ -32,12 +33,12 @@ loop while !session.IsComplete
         note right : Atomic write
     end
 
-    Agent -> SessionStore : Save(session, sessionsDir)
+    Agent -> SessionStore : Save(session)
     SessionStore -> FS : Atomic write to sessions/{id}.json
 
-    Agent --> User : "[Console] Outbox file ready: {filename}"
-    Agent --> User : "[Console] Instructions: copy, paste, save response"
-    Agent --> User : "[Console] Waiting for inbox response..."
+    Agent -> Log : LogInformation("Outbox file ready: {filename}")
+    Agent -> Log : LogInformation("Instructions: copy, paste, save response")
+    Agent -> Log : LogInformation("Waiting for inbox response...")
 
     == User Interaction ==
 
@@ -62,7 +63,7 @@ loop while !session.IsComplete
         Agent -> Agent : IsFileReady() - retry\nexclusive open 5 times
     end
 
-    Agent --> User : "[Console] Processing: {filename}"
+    Agent -> Log : LogInformation("Processing: {filename}")
 
     == Command Processing ==
 
@@ -82,7 +83,11 @@ loop while !session.IsComplete
     deactivate CommandExecutor
 
     loop for each result in outcome.Results
-        Agent --> User : "[Console] [OK/FAIL] {type}: {summary}"
+        alt result.Success
+            Agent -> Log : LogInformation("[OK] {type}: {summary}")
+        else
+            Agent -> Log : LogWarning("[FAIL] {type}: {summary}")
+        end
     end
 
     Agent -> Agent : session.LastResults = outcome.Results
@@ -90,11 +95,11 @@ loop while !session.IsComplete
 
     alt outcome.TaskComplete == true
         Agent -> Agent : session.IsComplete = true
-        Agent --> User : "[Console] Task complete!"
-        Agent --> User : "[Console] {doneMessage}"
+        Agent -> Log : LogInformation("Task complete!")
+        Agent -> Log : LogInformation("{doneMessage}")
     end
 
-    Agent -> SessionStore : Save(session, sessionsDir)
+    Agent -> SessionStore : Save(session)
     Agent -> FS : Move(inbox file -> inbox/processed/)
 
 end

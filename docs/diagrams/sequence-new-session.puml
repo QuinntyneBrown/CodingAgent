@@ -2,51 +2,57 @@
 title CodingAgent - New Session Startup
 
 actor User
-participant Program
+participant "System.CommandLine" as CLI
+participant "IHost / DI Container" as DI
+participant "NewSessionCommand" as Cmd
 participant Agent
 participant SessionStore
+participant "ILogger" as Log
 participant "File System" as FS
 
-User -> Program : CodingAgent "Create a calculator app"
-activate Program
+User -> CLI : CodingAgent new "Create a calculator app"
+activate CLI
 
-Program -> Program : FindRepoRoot(baseDirectory)
-note right : Walks up directory tree\nto find parent of src/
+note over CLI
+  System.CommandLine parses args:
+  command = "new"
+  task = ["Create", "a", "calculator", "app"]
+end note
 
-Program -> Agent : new Agent(repoRoot)
+CLI -> Cmd : SetHandler invoked
+activate Cmd
+
+Cmd -> DI : GetRequiredService<Agent>()
+DI --> Cmd : Agent instance\n(with all dependencies injected)
+
+note over DI
+  DI resolves full graph:
+  Agent(
+    IOptions<AgentOptions>,
+    CommandExecutor,
+    CommandParser,
+    SessionStore,
+    OutboxBuilder,
+    ILogger<Agent>)
+end note
+
+Cmd -> Agent : StartNewSession("Create a calculator app")
 activate Agent
-
-Agent -> FS : CreateDirectory(workspace/)
-Agent -> FS : CreateDirectory(inbox/)
-Agent -> FS : CreateDirectory(outbox/)
-Agent -> FS : CreateDirectory(sessions/)
-Agent -> FS : CreateDirectory(inbox/processed/)
-Agent -> Agent : new CommandExecutor(workspacePath)
-
-Program -> Agent : StartNewSession("Create a calculator app")
 
 Agent -> Agent : Generate SessionId\n(first 8 chars of GUID)
 
-create entity Session
-Agent -> Session : new Session
-note right
-  SessionId: "a1b2c3d4"
-  Task: "Create a calculator app"
-  SequenceNumber: 0
-  IsComplete: false
-end note
-
-Agent -> SessionStore : Save(session, sessionsDir)
+Agent -> SessionStore : Save(session)
 SessionStore -> FS : WriteAllText(temp file)
-SessionStore -> FS : Move(temp -> a1b2c3d4.json)
+SessionStore -> FS : Move(temp -> {id}.json)
 
-Agent --> User : "[Console] New session: a1b2c3d4"
-Agent --> User : "[Console] Task: Create a calculator app"
+Agent -> Log : LogInformation("New session: {id}")
+Agent -> Log : LogInformation("Task: {task}")
 
-Program -> Agent : Run()
+Cmd -> Agent : Run()
 ref over Agent, User, FS : See Main Loop Sequence Diagram
 
 deactivate Agent
-deactivate Program
+deactivate Cmd
+deactivate CLI
 
 @enduml

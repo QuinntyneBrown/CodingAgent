@@ -5,27 +5,12 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>CodingAgent</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="workspace\**" />
-    <Compile Remove="inbox\**" />
-    <Compile Remove="outbox\**" />
-    <Compile Remove="sessions\**" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Remove="workspace\**" />
-    <Content Remove="inbox\**" />
-    <Content Remove="outbox\**" />
-    <Content Remove="sessions\**" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Remove="workspace\**" />
-    <None Remove="inbox\**" />
-    <None Remove="outbox\**" />
-    <None Remove="sessions\**" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
   </ItemGroup>
 
 </Project>

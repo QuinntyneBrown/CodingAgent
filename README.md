@@ -4,7 +4,7 @@ An offline coding agent that communicates with a web-based LLM through text file
 
 ## How It Works
 
-1. Run `CodingAgent "Create a calculator app"`
+1. Run `CodingAgent new "Create a calculator app"`
 2. The agent writes an outbox file with the task and protocol instructions
 3. Copy the outbox file contents into your LLM chat
 4. Save the LLM response as a `.txt` file in the `inbox/` folder
@@ -26,24 +26,57 @@ dotnet build
 
 ```
 # Start a new session
-CodingAgent "Build a REST API with user authentication"
+CodingAgent new "Build a REST API with user authentication"
 
 # Resume the latest incomplete session
-CodingAgent --resume
+CodingAgent resume
 
 # Show help
 CodingAgent --help
 ```
 
+## Configuration
+
+Settings are loaded from `appsettings.json` at the repo root and can be overridden with environment variables.
+
+```json
+{
+  "Agent": {
+    "WorkspaceDir": "workspace",
+    "InboxDir": "inbox",
+    "OutboxDir": "outbox",
+    "SessionsDir": "sessions",
+    "CommandTimeoutSeconds": 30,
+    "MaxOutputLength": 4000
+  }
+}
+```
+
+Environment variable override example: `Agent__CommandTimeoutSeconds=60`
+
 ## Project Structure
 
 ```
 src/CodingAgent/
-  Program.cs           Entry point, CLI arg parsing
-  Agent.cs             Main orchestration loop
-  Protocol.cs          Protocol constants, session model, outbox builder
-  CommandParser.cs     Parse LLM responses into typed commands
-  CommandExecutor.cs   Execute commands against the workspace
+  Program.cs                    Entry point, host builder, CLI setup
+  Protocol.cs                   Protocol constants and LLM instructions
+  PlainConsoleFormatter.cs      Clean console log formatter
+  Commands/
+    NewSessionCommand.cs        "new" subcommand (System.CommandLine)
+    ResumeCommand.cs            "resume" subcommand (System.CommandLine)
+  Configuration/
+    AgentOptions.cs             Options pattern configuration
+  Models/
+    Session.cs                  Session state model
+    CommandResult.cs            Command execution result
+    ExecutionOutcome.cs         Aggregated execution results
+    ParsedCommand.cs            Parsed command type hierarchy
+  Services/
+    Agent.cs                    Main orchestration loop
+    CommandExecutor.cs          Execute commands against workspace
+    CommandParser.cs            Parse LLM responses into commands
+    SessionStore.cs             Session JSON persistence
+    OutboxBuilder.cs            Outbox message assembly
 ```
 
 The following directories are created at runtime:
@@ -54,6 +87,14 @@ The following directories are created at runtime:
 | `outbox/` | Agent writes request files here |
 | `workspace/` | Generated code lives here |
 | `sessions/` | Session state (JSON) |
+
+## Technology Stack
+
+- **.NET 8** console application
+- **System.CommandLine** for CLI parsing (file-per-command pattern)
+- **Microsoft.Extensions.Hosting** for dependency injection, logging, and configuration
+- **Microsoft.Extensions.Options** for strongly-typed configuration
+- **Microsoft.Extensions.Logging** with custom plain console formatter
 
 ## Protocol Commands
 
@@ -74,4 +115,4 @@ The LLM responds with command blocks that the agent parses and executes:
 - All file operations are sandboxed to the `workspace/` directory
 - Path traversal attempts (e.g., `../`) are rejected
 - Shell commands run with `workspace/` as the working directory
-- Process execution has a 30-second timeout
+- Process execution has a configurable timeout (default 30s)

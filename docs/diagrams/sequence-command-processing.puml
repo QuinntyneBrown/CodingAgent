@@ -4,6 +4,7 @@ title CodingAgent - Command Parsing & Execution
 participant Agent
 participant CommandParser
 participant CommandExecutor
+participant "ILogger" as Log
 participant "File System" as FS
 participant "Process\n(cmd.exe / sh)" as Proc
 
@@ -73,8 +74,10 @@ loop for each command
         alt path is safe
             CommandExecutor -> FS : CreateDirectory(parent)
             CommandExecutor -> FS : WriteAllText(fullPath, content)
+            CommandExecutor -> Log : LogInformation("Created '{path}'")
             CommandExecutor -> ExecutionOutcome : Add result [OK]
         else path escapes workspace
+            CommandExecutor -> Log : LogWarning("Path traversal rejected")
             CommandExecutor -> ExecutionOutcome : Add result [REJECTED]
         end
 
@@ -85,6 +88,7 @@ loop for each command
             CommandExecutor -> CommandExecutor : Validate line range
             CommandExecutor -> CommandExecutor : RemoveRange + InsertRange
             CommandExecutor -> FS : WriteAllLines(fullPath, lines)
+            CommandExecutor -> Log : LogInformation("Edited '{path}'")
             CommandExecutor -> ExecutionOutcome : Add result [OK]
         else
             CommandExecutor -> ExecutionOutcome : Add result [FAILED]
@@ -94,6 +98,7 @@ loop for each command
         CommandExecutor -> CommandExecutor : ResolveSafePath(path)
         alt path is safe AND file exists
             CommandExecutor -> FS : Delete(fullPath)
+            CommandExecutor -> Log : LogInformation("Deleted '{path}'")
             CommandExecutor -> ExecutionOutcome : Add result [OK]
         else
             CommandExecutor -> ExecutionOutcome : Add result [FAILED]
@@ -109,16 +114,22 @@ loop for each command
         end
 
     else RunCommand
+        CommandExecutor -> Log : LogInformation("Running: {command}")
         CommandExecutor -> Proc : Start(cmd /c "command")
         activate Proc
-        note right : WorkingDirectory = workspace\nTimeout = 30 seconds
+        note right
+          WorkingDirectory = workspace
+          Timeout = AgentOptions
+            .CommandTimeoutSeconds
+        end note
         Proc -> Proc : Execute command
         Proc --> CommandExecutor : stdout, stderr, exitCode
         deactivate Proc
+        CommandExecutor -> CommandExecutor : TruncateOutput()\n(AgentOptions.MaxOutputLength)
         CommandExecutor -> ExecutionOutcome : Add result [OK/FAIL by exit code]
 
     else MessageCommand
-        CommandExecutor --> Agent : Console.WriteLine("[LLM] {text}")
+        CommandExecutor -> Log : LogInformation("[LLM] {text}")
         CommandExecutor -> ExecutionOutcome : Add result [OK]
 
     else DoneCommand

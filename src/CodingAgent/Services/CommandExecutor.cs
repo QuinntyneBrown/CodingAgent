@@ -1,22 +1,24 @@
 using System.Diagnostics;
+using CodingAgent.Configuration;
+using CodingAgent.Models;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
-namespace CodingAgent;
-
-public class ExecutionOutcome
-{
-    public List<CommandResult> Results { get; } = new();
-    public List<string> ReadFileRequests { get; } = new();
-    public bool TaskComplete { get; set; }
-    public string? DoneMessage { get; set; }
-}
+namespace CodingAgent.Services;
 
 public class CommandExecutor
 {
     private readonly string _workspacePath;
+    private readonly int _timeoutMs;
+    private readonly int _maxOutputLength;
+    private readonly ILogger<CommandExecutor> _logger;
 
-    public CommandExecutor(string workspacePath)
+    public CommandExecutor(IOptions<AgentOptions> options, ILogger<CommandExecutor> logger)
     {
-        _workspacePath = Path.GetFullPath(workspacePath);
+        _workspacePath = Path.GetFullPath(options.Value.WorkspacePath);
+        _timeoutMs = options.Value.CommandTimeoutSeconds * 1000;
+        _maxOutputLength = options.Value.MaxOutputLength;
+        _logger = logger;
         Directory.CreateDirectory(_workspacePath);
     }
 
@@ -72,9 +74,7 @@ public class CommandExecutor
 
     private string? ResolveSafePath(string relativePath)
     {
-        // Normalize separators and reject obviously bad paths
         var normalized = relativePath.Replace('/', Path.DirectorySeparatorChar);
-
         var fullPath = Path.GetFullPath(Path.Combine(_workspacePath, normalized));
         var workspaceWithSep = _workspacePath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
 
@@ -89,6 +89,7 @@ public class CommandExecutor
         var safePath = ResolveSafePath(cmd.Path);
         if (safePath == null)
         {
+            _logger.LogWarning("Path traversal rejected: {Path}", cmd.Path);
             return new CommandResult
             {
                 CommandType = "CREATE_FILE",
@@ -102,6 +103,7 @@ public class CommandExecutor
             var dir = Path.GetDirectoryName(safePath)!;
             Directory.CreateDirectory(dir);
             File.WriteAllText(safePath, cmd.Content);
+            _logger.LogInformation("Created '{Path}'", cmd.Path);
             return new CommandResult
             {
                 CommandType = "CREATE_FILE",
@@ -111,6 +113,7 @@ public class CommandExecutor
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to create '{Path}'", cmd.Path);
             return new CommandResult
             {
                 CommandType = "CREATE_FILE",
@@ -125,6 +128,7 @@ public class CommandExecutor
         var safePath = ResolveSafePath(cmd.Path);
         if (safePath == null)
         {
+            _logger.LogWarning("Path traversal rejected: {Path}", cmd.Path);
             return new CommandResult
             {
                 CommandType = "EDIT_FILE",
@@ -147,8 +151,7 @@ public class CommandExecutor
         {
             var lines = File.ReadAllLines(safePath).ToList();
 
-            // Validate line range (1-indexed, inclusive)
-            int start = cmd.StartLine - 1; // convert to 0-indexed
+            int start = cmd.StartLine - 1;
             int end = cmd.EndLine - 1;
 
             if (start < 0 || end < start || start >= lines.Count)
@@ -161,15 +164,14 @@ public class CommandExecutor
                 };
             }
 
-            // Clamp end to file bounds
             end = Math.Min(end, lines.Count - 1);
 
-            // Replace the range
             var newLines = cmd.Content.Split('\n');
             lines.RemoveRange(start, end - start + 1);
             lines.InsertRange(start, newLines);
 
             File.WriteAllLines(safePath, lines);
+            _logger.LogInformation("Edited '{Path}' lines {Start}-{End}", cmd.Path, cmd.StartLine, cmd.EndLine);
 
             return new CommandResult
             {
@@ -180,6 +182,7 @@ public class CommandExecutor
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to edit '{Path}'", cmd.Path);
             return new CommandResult
             {
                 CommandType = "EDIT_FILE",
@@ -194,6 +197,7 @@ public class CommandExecutor
         var safePath = ResolveSafePath(cmd.Path);
         if (safePath == null)
         {
+            _logger.LogWarning("Path traversal rejected: {Path}", cmd.Path);
             return new CommandResult
             {
                 CommandType = "DELETE_FILE",
@@ -215,6 +219,7 @@ public class CommandExecutor
         try
         {
             File.Delete(safePath);
+            _logger.LogInformation("Deleted '{Path}'", cmd.Path);
             return new CommandResult
             {
                 CommandType = "DELETE_FILE",
@@ -224,6 +229,7 @@ public class CommandExecutor
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to delete '{Path}'", cmd.Path);
             return new CommandResult
             {
                 CommandType = "DELETE_FILE",
@@ -238,6 +244,7 @@ public class CommandExecutor
         var safePath = ResolveSafePath(cmd.Path);
         if (safePath == null)
         {
+            _logger.LogWarning("Path traversal rejected: {Path}", cmd.Path);
             return new CommandResult
             {
                 CommandType = "READ_FILE",
@@ -269,6 +276,8 @@ public class CommandExecutor
     {
         try
         {
+            _logger.LogInformation("Running command: {Command}", cmd.Command);
+
             using var process = new Process();
             process.StartInfo = new ProcessStartInfo
             {
@@ -286,14 +295,15 @@ public class CommandExecutor
             var stdout = process.StandardOutput.ReadToEnd();
             var stderr = process.StandardError.ReadToEnd();
 
-            var exited = process.WaitForExit(30_000);
+            var exited = process.WaitForExit(_timeoutMs);
             if (!exited)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
+                _logger.LogWarning("Command timed out ({Timeout}s): {Command}", _timeoutMs / 1000, cmd.Command);
                 return new CommandResult
                 {
                     CommandType = "RUN_COMMAND",
-                    Summary = $"Command timed out (30s): {cmd.Command}",
+                    Summary = $"Command timed out ({_timeoutMs / 1000}s): {cmd.Command}",
                     Success = false,
                     Output = TruncateOutput(stdout + "\n" + stderr)
                 };
@@ -313,6 +323,7 @@ public class CommandExecutor
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to run command: {Command}", cmd.Command);
             return new CommandResult
             {
                 CommandType = "RUN_COMMAND",
@@ -324,9 +335,7 @@ public class CommandExecutor
 
     private CommandResult ExecuteMessage(MessageCommand cmd)
     {
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine($"[LLM] {cmd.Text}");
-        Console.ResetColor();
+        _logger.LogInformation("[LLM] {Message}", cmd.Text);
 
         return new CommandResult
         {
@@ -336,10 +345,10 @@ public class CommandExecutor
         };
     }
 
-    private static string TruncateOutput(string output, int maxLength = 4000)
+    private string TruncateOutput(string output)
     {
-        if (output.Length <= maxLength)
+        if (output.Length <= _maxOutputLength)
             return output;
-        return output[..maxLength] + "\n... (output truncated)";
+        return output[.._maxOutputLength] + "\n... (output truncated)";
     }
 }
