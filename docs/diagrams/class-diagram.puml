@@ -1,0 +1,173 @@
+@startuml class-diagram
+title CodingAgent - Class Diagram
+skinparam linetype ortho
+skinparam classAttributeIconSize 0
+
+package "Entry Point" {
+    class Program {
+        + {static} Main(args: string[]): void
+        - {static} PrintUsage(): void
+        - {static} FindRepoRoot(startDir: string): string?
+    }
+}
+
+package "Orchestration" {
+    class Agent {
+        - _basePath: string
+        - _workspacePath: string
+        - _inboxPath: string
+        - _outboxPath: string
+        - _sessionsPath: string
+        - _processedPath: string
+        - _executor: CommandExecutor
+        - _session: Session
+        --
+        + Agent(basePath: string)
+        + StartNewSession(prompt: string): void
+        + ResumeSession(): bool
+        + Run(): void
+        - WaitForInboxFile(): string?
+        - FindInboxFile(): string?
+        - {static} IsFileReady(path: string): bool
+    }
+}
+
+package "Protocol & Models" {
+    class Protocol <<static>> {
+        + {static} Version: string = "1.0"
+        + {static} SectionHeader: string
+        + {static} SectionProtocol: string
+        + {static} SectionContext: string
+        + {static} SectionPrompt: string
+        + {static} Instructions: string
+    }
+
+    class Session {
+        + SessionId: string
+        + Task: string
+        + SequenceNumber: int
+        + IsComplete: bool
+        + CreatedAt: DateTime
+        + UpdatedAt: DateTime
+        + LastResults: List<CommandResult>
+        + ReadFileRequests: List<string>
+    }
+
+    class CommandResult {
+        + CommandType: string
+        + Summary: string
+        + Success: bool
+        + Output: string
+    }
+
+    class SessionStore <<static>> {
+        - {static} JsonOptions: JsonSerializerOptions
+        + {static} Save(session: Session, sessionsDir: string): void
+        + {static} Load(sessionsDir: string, sessionId: string): Session?
+        + {static} LoadLatest(sessionsDir: string): Session?
+    }
+
+    class OutboxBuilder <<static>> {
+        + {static} Build(session: Session, workspacePath: string): string
+    }
+}
+
+package "Command Parsing" {
+    abstract record ParsedCommand
+
+    record CreateFileCommand {
+        + Path: string
+        + Content: string
+    }
+
+    record EditFileCommand {
+        + Path: string
+        + StartLine: int
+        + EndLine: int
+        + Content: string
+    }
+
+    record DeleteFileCommand {
+        + Path: string
+    }
+
+    record ReadFileCommand {
+        + Path: string
+    }
+
+    record RunCommand {
+        + Command: string
+    }
+
+    record MessageCommand {
+        + Text: string
+    }
+
+    record DoneCommand {
+        + Message: string
+    }
+
+    record ErrorCommand {
+        + Error: string
+    }
+
+    class CommandParser <<static>> {
+        - {static} AttributeRegex: Regex
+        + {static} Parse(text: string): List<ParsedCommand>
+        - {static} ParseAttributes(tag: string): Dictionary<string, string>
+        - {static} CollectBody(lines: string[], startIdx: int, closingTag: string): (string, int)
+    }
+}
+
+package "Command Execution" {
+    class ExecutionOutcome {
+        + Results: List<CommandResult>
+        + ReadFileRequests: List<string>
+        + TaskComplete: bool
+        + DoneMessage: string?
+    }
+
+    class CommandExecutor {
+        - _workspacePath: string
+        --
+        + CommandExecutor(workspacePath: string)
+        + Execute(commands: List<ParsedCommand>): ExecutionOutcome
+        - ResolveSafePath(relativePath: string): string?
+        - ExecuteCreateFile(cmd: CreateFileCommand): CommandResult
+        - ExecuteEditFile(cmd: EditFileCommand): CommandResult
+        - ExecuteDeleteFile(cmd: DeleteFileCommand): CommandResult
+        - ExecuteReadFile(cmd: ReadFileCommand, outcome: ExecutionOutcome): CommandResult
+        - ExecuteRunCommand(cmd: RunCommand): CommandResult
+        - ExecuteMessage(cmd: MessageCommand): CommandResult
+        - {static} TruncateOutput(output: string, maxLength: int): string
+    }
+}
+
+' Inheritance
+CreateFileCommand --|> ParsedCommand
+EditFileCommand --|> ParsedCommand
+DeleteFileCommand --|> ParsedCommand
+ReadFileCommand --|> ParsedCommand
+RunCommand --|> ParsedCommand
+MessageCommand --|> ParsedCommand
+DoneCommand --|> ParsedCommand
+ErrorCommand --|> ParsedCommand
+
+' Relationships
+Program ..> Agent : creates
+Agent *-- CommandExecutor : owns
+Agent --> Session : manages
+Agent ..> SessionStore : uses
+Agent ..> OutboxBuilder : uses
+Agent ..> CommandParser : uses
+SessionStore ..> Session : serializes
+OutboxBuilder ..> Session : reads
+OutboxBuilder ..> Protocol : reads
+CommandParser ..> ParsedCommand : produces
+CommandExecutor ..> ParsedCommand : consumes
+CommandExecutor ..> ExecutionOutcome : produces
+CommandExecutor ..> CommandResult : produces
+ExecutionOutcome o-- CommandResult : contains
+Session o-- CommandResult : contains
+
+@enduml

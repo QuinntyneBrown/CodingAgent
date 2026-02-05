@@ -1,0 +1,102 @@
+@startuml sequence-main-loop
+title CodingAgent - Main Processing Loop
+
+actor User
+participant Agent
+participant OutboxBuilder
+participant SessionStore
+participant CommandParser
+participant CommandExecutor
+participant "FileSystemWatcher" as FSW
+participant "File System" as FS
+
+loop while !session.IsComplete
+
+    Agent -> Agent : session.SequenceNumber++
+    Agent -> Agent : Build outboxFileName\n"{id}_seq{NNNN}.txt"
+
+    alt outbox file does NOT exist
+        Agent -> OutboxBuilder : Build(session, workspacePath)
+        activate OutboxBuilder
+
+        OutboxBuilder -> FS : GetFiles(workspace/, *, AllDirectories)
+        note right : Build workspace\nfile listing
+
+        OutboxBuilder -> OutboxBuilder : Assemble sections:\n1. HEADER\n2. PROTOCOL\n3. CONTEXT\n4. PROMPT
+
+        OutboxBuilder --> Agent : outbox content string
+        deactivate OutboxBuilder
+
+        Agent -> FS : WriteAllText(outbox.tmp, content)
+        Agent -> FS : Move(outbox.tmp -> outbox.txt)
+        note right : Atomic write
+    end
+
+    Agent -> SessionStore : Save(session, sessionsDir)
+    SessionStore -> FS : Atomic write to sessions/{id}.json
+
+    Agent --> User : "[Console] Outbox file ready: {filename}"
+    Agent --> User : "[Console] Instructions: copy, paste, save response"
+    Agent --> User : "[Console] Waiting for inbox response..."
+
+    == User Interaction ==
+
+    User -> User : Copy outbox file to LLM
+    User -> User : Get LLM response
+    User -> FS : Save response as inbox/*.txt
+
+    == Inbox Detection ==
+
+    Agent -> FS : Check for existing inbox/*.txt files
+    alt file already exists
+        Agent -> Agent : Return existing file
+    else no files yet
+        Agent -> FSW : Setup watcher on inbox/*.txt
+        FSW -> FSW : Wait for Created/Changed/Renamed event
+
+        FS --> FSW : File event notification
+        FSW --> Agent : resetEvent.Set()
+
+        Agent -> Agent : Thread.Sleep(500ms)\n(let write complete)
+        Agent -> FS : FindInboxFile()
+        Agent -> Agent : IsFileReady() - retry\nexclusive open 5 times
+    end
+
+    Agent --> User : "[Console] Processing: {filename}"
+
+    == Command Processing ==
+
+    Agent -> FS : ReadAllText(inboxFile)
+    FS --> Agent : responseText
+
+    Agent -> CommandParser : Parse(responseText)
+    activate CommandParser
+    ref over CommandParser : See Command Processing\nSequence Diagram
+    CommandParser --> Agent : List<ParsedCommand>
+    deactivate CommandParser
+
+    Agent -> CommandExecutor : Execute(commands)
+    activate CommandExecutor
+    ref over CommandExecutor : See Command Processing\nSequence Diagram
+    CommandExecutor --> Agent : ExecutionOutcome
+    deactivate CommandExecutor
+
+    loop for each result in outcome.Results
+        Agent --> User : "[Console] [OK/FAIL] {type}: {summary}"
+    end
+
+    Agent -> Agent : session.LastResults = outcome.Results
+    Agent -> Agent : session.ReadFileRequests = outcome.ReadFileRequests
+
+    alt outcome.TaskComplete == true
+        Agent -> Agent : session.IsComplete = true
+        Agent --> User : "[Console] Task complete!"
+        Agent --> User : "[Console] {doneMessage}"
+    end
+
+    Agent -> SessionStore : Save(session, sessionsDir)
+    Agent -> FS : Move(inbox file -> inbox/processed/)
+
+end
+
+@enduml

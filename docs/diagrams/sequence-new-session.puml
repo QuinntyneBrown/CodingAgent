@@ -1,0 +1,52 @@
+@startuml sequence-new-session
+title CodingAgent - New Session Startup
+
+actor User
+participant Program
+participant Agent
+participant SessionStore
+participant "File System" as FS
+
+User -> Program : CodingAgent "Create a calculator app"
+activate Program
+
+Program -> Program : FindRepoRoot(baseDirectory)
+note right : Walks up directory tree\nto find parent of src/
+
+Program -> Agent : new Agent(repoRoot)
+activate Agent
+
+Agent -> FS : CreateDirectory(workspace/)
+Agent -> FS : CreateDirectory(inbox/)
+Agent -> FS : CreateDirectory(outbox/)
+Agent -> FS : CreateDirectory(sessions/)
+Agent -> FS : CreateDirectory(inbox/processed/)
+Agent -> Agent : new CommandExecutor(workspacePath)
+
+Program -> Agent : StartNewSession("Create a calculator app")
+
+Agent -> Agent : Generate SessionId\n(first 8 chars of GUID)
+
+create entity Session
+Agent -> Session : new Session
+note right
+  SessionId: "a1b2c3d4"
+  Task: "Create a calculator app"
+  SequenceNumber: 0
+  IsComplete: false
+end note
+
+Agent -> SessionStore : Save(session, sessionsDir)
+SessionStore -> FS : WriteAllText(temp file)
+SessionStore -> FS : Move(temp -> a1b2c3d4.json)
+
+Agent --> User : "[Console] New session: a1b2c3d4"
+Agent --> User : "[Console] Task: Create a calculator app"
+
+Program -> Agent : Run()
+ref over Agent, User, FS : See Main Loop Sequence Diagram
+
+deactivate Agent
+deactivate Program
+
+@enduml

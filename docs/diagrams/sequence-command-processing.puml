@@ -1,0 +1,137 @@
+@startuml sequence-command-processing
+title CodingAgent - Command Parsing & Execution
+
+participant Agent
+participant CommandParser
+participant CommandExecutor
+participant "File System" as FS
+participant "Process\n(cmd.exe / sh)" as Proc
+
+== Parsing Phase ==
+
+Agent -> CommandParser : Parse(responseText)
+activate CommandParser
+
+CommandParser -> CommandParser : Split text into lines
+
+loop for each line
+    alt line matches [CREATE_FILE path="..."]
+        CommandParser -> CommandParser : ParseAttributes(tag)
+        CommandParser -> CommandParser : CollectBody(lines, i+1, "[/CREATE_FILE]")
+        CommandParser -> CommandParser : Add CreateFileCommand(path, body)
+
+    else line matches [EDIT_FILE path="..." start_line="N" end_line="M"]
+        CommandParser -> CommandParser : ParseAttributes(tag)
+        CommandParser -> CommandParser : Validate start_line, end_line as integers
+        CommandParser -> CommandParser : CollectBody(lines, i+1, "[/EDIT_FILE]")
+        CommandParser -> CommandParser : Add EditFileCommand(path, start, end, body)
+
+    else line matches [DELETE_FILE path="..."]
+        CommandParser -> CommandParser : ParseAttributes(tag)
+        CommandParser -> CommandParser : Add DeleteFileCommand(path)
+        note right : Self-closing tag\n(no body to collect)
+
+    else line matches [READ_FILE path="..."]
+        CommandParser -> CommandParser : ParseAttributes(tag)
+        CommandParser -> CommandParser : Add ReadFileCommand(path)
+        note right : Self-closing tag
+
+    else line matches [RUN_COMMAND]
+        CommandParser -> CommandParser : CollectBody(lines, i+1, "[/RUN_COMMAND]")
+        CommandParser -> CommandParser : Add RunCommand(body.Trim())
+
+    else line matches [MESSAGE]
+        CommandParser -> CommandParser : CollectBody(lines, i+1, "[/MESSAGE]")
+        CommandParser -> CommandParser : Add MessageCommand(body.Trim())
+
+    else line matches [DONE]
+        CommandParser -> CommandParser : CollectBody(lines, i+1, "[/DONE]")
+        CommandParser -> CommandParser : Add DoneCommand(body.Trim())
+
+    else malformed tag detected
+        CommandParser -> CommandParser : Add ErrorCommand(description)
+
+    else non-command line
+        CommandParser -> CommandParser : Skip (ignore)
+    end
+end
+
+CommandParser --> Agent : List<ParsedCommand>
+deactivate CommandParser
+
+== Execution Phase ==
+
+Agent -> CommandExecutor : Execute(commands)
+activate CommandExecutor
+
+create entity ExecutionOutcome
+CommandExecutor -> ExecutionOutcome : new ExecutionOutcome()
+
+loop for each command
+    alt CreateFileCommand
+        CommandExecutor -> CommandExecutor : ResolveSafePath(path)
+        alt path is safe
+            CommandExecutor -> FS : CreateDirectory(parent)
+            CommandExecutor -> FS : WriteAllText(fullPath, content)
+            CommandExecutor -> ExecutionOutcome : Add result [OK]
+        else path escapes workspace
+            CommandExecutor -> ExecutionOutcome : Add result [REJECTED]
+        end
+
+    else EditFileCommand
+        CommandExecutor -> CommandExecutor : ResolveSafePath(path)
+        alt path is safe AND file exists
+            CommandExecutor -> FS : ReadAllLines(fullPath)
+            CommandExecutor -> CommandExecutor : Validate line range
+            CommandExecutor -> CommandExecutor : RemoveRange + InsertRange
+            CommandExecutor -> FS : WriteAllLines(fullPath, lines)
+            CommandExecutor -> ExecutionOutcome : Add result [OK]
+        else
+            CommandExecutor -> ExecutionOutcome : Add result [FAILED]
+        end
+
+    else DeleteFileCommand
+        CommandExecutor -> CommandExecutor : ResolveSafePath(path)
+        alt path is safe AND file exists
+            CommandExecutor -> FS : Delete(fullPath)
+            CommandExecutor -> ExecutionOutcome : Add result [OK]
+        else
+            CommandExecutor -> ExecutionOutcome : Add result [FAILED]
+        end
+
+    else ReadFileCommand
+        CommandExecutor -> CommandExecutor : ResolveSafePath(path)
+        alt path is safe AND file exists
+            CommandExecutor -> ExecutionOutcome : ReadFileRequests.Add(path)
+            CommandExecutor -> ExecutionOutcome : Add result [OK - queued]
+        else
+            CommandExecutor -> ExecutionOutcome : Add result [FAILED]
+        end
+
+    else RunCommand
+        CommandExecutor -> Proc : Start(cmd /c "command")
+        activate Proc
+        note right : WorkingDirectory = workspace\nTimeout = 30 seconds
+        Proc -> Proc : Execute command
+        Proc --> CommandExecutor : stdout, stderr, exitCode
+        deactivate Proc
+        CommandExecutor -> ExecutionOutcome : Add result [OK/FAIL by exit code]
+
+    else MessageCommand
+        CommandExecutor --> Agent : Console.WriteLine("[LLM] {text}")
+        CommandExecutor -> ExecutionOutcome : Add result [OK]
+
+    else DoneCommand
+        CommandExecutor -> ExecutionOutcome : TaskComplete = true
+        CommandExecutor -> ExecutionOutcome : DoneMessage = message
+        CommandExecutor -> ExecutionOutcome : Add result [OK]
+
+    else ErrorCommand
+        CommandExecutor -> ExecutionOutcome : Add result [PARSE_ERROR]
+    end
+end
+
+CommandExecutor --> Agent : ExecutionOutcome
+deactivate CommandExecutor
+
+@enduml
